@@ -140,6 +140,12 @@ export async function startSearch(params: FlightSearchParams, userIp: string = '
     // Generate signature
     const signature = generateSignature(requestBody);
 
+    const debugLog: string[] = [];
+    debugLog.push(`Signature: ${signature.substring(0, 10)}...`);
+    debugLog.push(`Token: ${token.substring(0, 8)}...`);
+    debugLog.push(`Marker: ${marker}`);
+    debugLog.push(`Request: ${JSON.stringify(requestBody).substring(0, 200)}...`);
+
     try {
         const response = await fetch(`${SEARCH_API_BASE}/search/affiliate/start`, {
             method: 'POST',
@@ -147,24 +153,32 @@ export async function startSearch(params: FlightSearchParams, userIp: string = '
                 'Content-Type': 'application/json',
                 'x-affiliate-user-id': token,
                 'x-signature': signature,
-                'x-real-host': process.env.NEXT_PUBLIC_SITE_URL || 'cheapflights.app',
+                'x-real-host': process.env.NEXT_PUBLIC_SITE_URL || 'cheapflightss.netlify.app',
                 'x-user-ip': userIp,
             },
             body: JSON.stringify({ ...requestBody, signature }),
         });
 
+        const responseText = await response.text();
+        debugLog.push(`Response status: ${response.status}`);
+        debugLog.push(`Response: ${responseText.substring(0, 500)}`);
+
         if (!response.ok) {
-            console.error('Search start failed:', response.status, await response.text());
+            console.error('Search start failed:', response.status, responseText);
+            console.error('Debug log:', debugLog.join('\n'));
             return null;
         }
 
-        const data = await response.json();
+        const data = JSON.parse(responseText);
+        console.log('Search started successfully:', data.search_id);
+
         return {
             searchId: data.search_id,
             resultsUrl: data.results_url,
         };
     } catch (error) {
         console.error('Search start error:', error);
+        console.error('Debug log:', debugLog.join('\n'));
         return null;
     }
 }

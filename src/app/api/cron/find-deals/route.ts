@@ -1,26 +1,23 @@
 import { NextResponse } from 'next/server';
-import { searchFlights, FlightSearchParams } from '@/lib/travelpayouts';
+import { startSearch, getSearchResults, FlightSearchParams } from '@/lib/travelpayouts';
 
 /**
- * Real-time Flight Search API
- * Debug version - shows detailed error info
+ * Real-time Flight Search API - Debug Version
  */
 
 export async function GET(request: Request) {
   const debugInfo: any = {
     step: 'init',
     errors: [],
+    apiResponses: [],
   };
 
   try {
-    // Get user IP for API requirement
+    // Get user IP
     const forwardedFor = request.headers.get('x-forwarded-for');
-    const userIp = forwardedFor?.split(',')[0]?.trim() ||
-      request.headers.get('x-real-ip') ||
-      '78.182.150.226'; // Fallback to a valid IP for testing
+    const userIp = forwardedFor?.split(',')[0]?.trim() || '78.182.150.226';
 
     debugInfo.userIp = userIp;
-    debugInfo.step = 'got_ip';
 
     // Check environment variables
     const token = process.env.TRAVELPAYOUTS_TOKEN;
@@ -41,7 +38,7 @@ export async function GET(request: Request) {
 
     debugInfo.step = 'starting_search';
 
-    // Sample search: Istanbul to Zurich, 30 days from now
+    // Sample search
     const departureDate = new Date();
     departureDate.setDate(departureDate.getDate() + 30);
     const returnDate = new Date(departureDate);
@@ -58,27 +55,67 @@ export async function GET(request: Request) {
 
     debugInfo.searchParams = params;
 
-    console.log(`Searching: ${params.origin} -> ${params.destination}, IP: ${userIp}`);
+    // Start search
+    const searchStart = await startSearch(params, userIp);
 
-    const tickets = await searchFlights(params, userIp);
+    if (!searchStart) {
+      debugInfo.step = 'search_start_failed';
+      debugInfo.errors.push('startSearch returned null - check Netlify function logs for details');
 
-    debugInfo.step = 'search_complete';
-    debugInfo.ticketCount = tickets.length;
+      return NextResponse.json({
+        success: false,
+        error: 'Failed to start search. Check Netlify logs.',
+        debug: debugInfo,
+      });
+    }
+
+    debugInfo.step = 'search_started';
+    debugInfo.searchId = searchStart.searchId;
+    debugInfo.resultsUrl = searchStart.resultsUrl;
+
+    // Poll for results (max 30 seconds)
+    let allTickets: any[] = [];
+    let lastTimestamp = 0;
+    let attempts = 0;
+    const maxAttempts = 15;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      debugInfo.pollAttempt = attempts;
+
+      const results = await getSearchResults(searchStart.searchId, searchStart.resultsUrl, lastTimestamp);
+
+      if (!results) {
+        debugInfo.errors.push(`Poll attempt ${attempts} failed`);
+        break;
+      }
+
+      allTickets = [...allTickets, ...results.tickets];
+      lastTimestamp = results.lastTimestamp;
+
+      if (results.isOver) {
+        debugInfo.step = 'search_complete';
+        break;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    debugInfo.ticketCount = allTickets.length;
 
     return NextResponse.json({
       success: true,
-      message: `Found ${tickets.length} real-time tickets`,
+      message: `Found ${allTickets.length} real-time tickets`,
       userIp,
       searchParams: params,
-      tickets: tickets.slice(0, 20),
+      tickets: allTickets.slice(0, 20),
       debug: debugInfo,
     });
 
   } catch (error) {
-    debugInfo.step = 'error';
+    debugInfo.step = 'exception';
     debugInfo.errors.push(String(error));
 
-    console.error('Search failed:', error);
     return NextResponse.json({
       success: false,
       error: String(error),
