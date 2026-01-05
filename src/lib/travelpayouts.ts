@@ -277,7 +277,7 @@ function parseTickets(data: any): FlightTicket[] {
             return {
                 id: p.id,
                 agentId: p.agent_id,
-                agentName: agent?.label || 'Unknown',
+                agentName: (agent as any)?.label || 'Unknown',
                 price: p.price.value,
                 currency: p.price.currency_code || 'EUR',
             };
@@ -293,8 +293,8 @@ function parseTickets(data: any): FlightTicket[] {
             returnDate: lastLeg?.local_departure_date_time?.split('T')[0] || '',
             price: cheapestProposal.price.value,
             currency: cheapestProposal.price.currency_code || 'EUR',
-            airline: airline?.iata || '',
-            airlineName: airline?.name || '',
+            airline: (airline as any)?.iata || '',
+            airlineName: (airline as any)?.name || '',
             transfers: totalTransfers,
             flightLegs: [], // Simplified for now
             proposals,
