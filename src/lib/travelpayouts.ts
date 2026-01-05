@@ -1,33 +1,13 @@
 /**
- * Travelpayouts REAL-TIME Flight Search API
+ * Travelpayouts Flight Data API Client
  * 
- * This API provides LIVE prices, not cached data.
- * Documentation: https://support.travelpayouts.com/hc/en-us/articles/360016197352
- * 
- * IMPORTANT:
- * - Cannot be used from localhost (requires deployment)
- * - Rate limit: 100 requests/hour per user IP
- * - Search takes 30-60 seconds to complete
- * - Links must only be generated on user click (not pre-generated)
+ * USING CACHED DATA API (v3) - simpler and works without complex signature
+ * Returns data from last 48 hours of user searches
  */
 
-import crypto from 'crypto';
+const TRAVELPAYOUTS_API_BASE = 'https://api.travelpayouts.com/aviasales/v3';
 
-const SEARCH_API_BASE = 'https://tickets-api.travelpayouts.com';
-
-export interface FlightSearchParams {
-    origin: string;        // IATA code (e.g., "IST")
-    destination: string;   // IATA code (e.g., "CDG")
-    departureDate: string; // YYYY-MM-DD
-    returnDate?: string;   // YYYY-MM-DD (optional for one-way)
-    adults?: number;       // 1-9
-    children?: number;     // 0-6
-    infants?: number;      // 0-6
-    tripClass?: 'Y' | 'C' | 'F' | 'W'; // Economy, Business, First, Comfort
-}
-
-export interface FlightTicket {
-    id: string;
+export interface TravelpayoutsFlight {
     origin: string;
     destination: string;
     departureDate: string;
@@ -35,391 +15,178 @@ export interface FlightTicket {
     price: number;
     currency: string;
     airline: string;
-    airlineName: string;
+    flightNumber: string;
     transfers: number;
-    flightLegs: FlightLeg[];
-    proposals: Proposal[];
+    tripDuration: number;
+    link: string;
 }
 
-export interface FlightLeg {
+export interface FlightSearchParams {
     origin: string;
     destination: string;
-    departureTime: string;
-    arrivalTime: string;
-    carrier: string;
-    flightNumber: string;
-    aircraft: string;
-}
-
-export interface Proposal {
-    id: string;
-    agentId: number;
-    agentName: string;
-    price: number;
-    currency: string;
-}
-
-export interface SearchResult {
-    searchId: string;
-    resultsUrl: string;
-    tickets: FlightTicket[];
-    isOver: boolean;
+    departureDate: string;
+    returnDate?: string;
+    adults?: number;
+    tripClass?: 'Y' | 'C' | 'F' | 'W';
 }
 
 /**
- * Generate the signature required for API authentication
- * Signature = MD5(token:marker:param1:param2:...) where params are sorted alphabetically
+ * Get round-trip prices using the CACHED DATA API
+ * This is simpler and doesn't require complex signature
  */
-function generateSignature(params: Record<string, any>): string {
-    const token = process.env.TRAVELPAYOUTS_TOKEN || '';
-    const marker = process.env.TRAVELPAYOUTS_MARKER || '';
-
-    // Sort parameters alphabetically and join values
-    const sortedValues = Object.keys(params)
-        .sort()
-        .map(key => {
-            const value = params[key];
-            if (typeof value === 'object') {
-                return JSON.stringify(value);
-            }
-            return String(value);
-        })
-        .join(':');
-
-    const signatureString = `${token}:${marker}:${sortedValues}`;
-    return crypto.createHash('md5').update(signatureString).digest('hex');
-}
-
-/**
- * Start a flight search
- * Returns searchId and resultsUrl for polling
- */
-export async function startSearch(params: FlightSearchParams, userIp: string = '78.182.150.226'): Promise<{ searchId: string; resultsUrl: string } | null> {
+export async function searchFlights(
+    params: FlightSearchParams,
+    userIp?: string
+): Promise<TravelpayoutsFlight[]> {
     const token = process.env.TRAVELPAYOUTS_TOKEN;
-    const marker = process.env.TRAVELPAYOUTS_MARKER;
-
-    if (!token || !marker) {
-        console.error('TRAVELPAYOUTS_TOKEN or TRAVELPAYOUTS_MARKER not set');
-        return null;
-    }
-
-    // Build directions array
-    const directions: any[] = [
-        {
-            origin: params.origin.toUpperCase(),
-            destination: params.destination.toUpperCase(),
-            date: params.departureDate,
-        }
-    ];
-
-    // Add return direction for round-trip
-    if (params.returnDate) {
-        directions.push({
-            origin: params.destination.toUpperCase(),
-            destination: params.origin.toUpperCase(),
-            date: params.returnDate,
-        });
-    }
-
-    const requestBody = {
-        marker,
-        locale: 'en-us',
-        currency_code: 'EUR',
-        market_code: 'TR',
-        search_params: {
-            trip_class: params.tripClass || 'Y',
-            passengers: {
-                adults: params.adults || 1,
-                children: params.children || 0,
-                infants: params.infants || 0,
-            },
-            directions,
-        },
-    };
-
-    // Generate signature
-    const signature = generateSignature(requestBody);
-
-    const debugLog: string[] = [];
-    debugLog.push(`Signature: ${signature.substring(0, 10)}...`);
-    debugLog.push(`Token: ${token.substring(0, 8)}...`);
-    debugLog.push(`Marker: ${marker}`);
-    debugLog.push(`Request: ${JSON.stringify(requestBody).substring(0, 200)}...`);
-
-    try {
-        const response = await fetch(`${SEARCH_API_BASE}/search/affiliate/start`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-affiliate-user-id': token,
-                'x-signature': signature,
-                'x-real-host': process.env.NEXT_PUBLIC_SITE_URL || 'cheapflightss.netlify.app',
-                'x-user-ip': userIp,
-            },
-            body: JSON.stringify({ ...requestBody, signature }),
-        });
-
-        const responseText = await response.text();
-        debugLog.push(`Response status: ${response.status}`);
-        debugLog.push(`Response: ${responseText.substring(0, 500)}`);
-
-        if (!response.ok) {
-            console.error('Search start failed:', response.status, responseText);
-            console.error('Debug log:', debugLog.join('\n'));
-            return null;
-        }
-
-        const data = JSON.parse(responseText);
-        console.log('Search started successfully:', data.search_id);
-
-        return {
-            searchId: data.search_id,
-            resultsUrl: data.results_url,
-        };
-    } catch (error) {
-        console.error('Search start error:', error);
-        console.error('Debug log:', debugLog.join('\n'));
-        return null;
-    }
-}
-
-/**
- * Poll for search results until is_over = true
- */
-export async function getSearchResults(
-    searchId: string,
-    resultsUrl: string,
-    lastTimestamp: number = 0
-): Promise<{ tickets: FlightTicket[]; isOver: boolean; lastTimestamp: number } | null> {
-    const token = process.env.TRAVELPAYOUTS_TOKEN;
-    const marker = process.env.TRAVELPAYOUTS_MARKER;
-
-    if (!token || !marker) {
-        return null;
-    }
-
-    const requestBody = {
-        search_id: searchId,
-        limit: 50,
-        last_update_timestamp: lastTimestamp,
-    };
-
-    const signature = generateSignature(requestBody);
-
-    try {
-        const response = await fetch(`${resultsUrl}/search/affiliate/results`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-affiliate-user-id': token,
-                'x-signature': signature,
-                'x-real-host': process.env.NEXT_PUBLIC_SITE_URL || 'cheapflights.app',
-                'x-user-ip': '0.0.0.0',
-            },
-            body: JSON.stringify({ ...requestBody, signature }),
-        });
-
-        if (response.status === 304) {
-            // No new results yet
-            return { tickets: [], isOver: false, lastTimestamp };
-        }
-
-        if (!response.ok) {
-            console.error('Results fetch failed:', response.status);
-            return null;
-        }
-
-        const data = await response.json();
-
-        // Parse tickets from response
-        const tickets = parseTickets(data);
-
-        return {
-            tickets,
-            isOver: data.is_over || false,
-            lastTimestamp: data.last_update_timestamp || lastTimestamp,
-        };
-    } catch (error) {
-        console.error('Results fetch error:', error);
-        return null;
-    }
-}
-
-/**
- * Parse the complex API response into our FlightTicket format
- */
-function parseTickets(data: any): FlightTicket[] {
-    if (!data.tickets || !data.flight_legs || !data.airlines || !data.agents) {
+    if (!token) {
+        console.error('TRAVELPAYOUTS_TOKEN is not set');
         return [];
     }
 
-    const tickets: FlightTicket[] = [];
-    const airlines = new Map(data.airlines.map((a: any) => [a.iata, a]));
-    const agents = new Map(data.agents.map((a: any) => [a.id, a]));
-    const flightLegs = data.flight_legs;
+    const queryParams = new URLSearchParams({
+        origin: params.origin,
+        destination: params.destination,
+        currency: 'eur',
+        market: 'tr',
+        limit: '30',
+        token,
+        sorting: 'price',
+        one_way: 'false',
+    });
 
-    for (const ticket of data.tickets) {
-        if (!ticket.proposals || ticket.proposals.length === 0) continue;
+    if (params.departureDate) {
+        queryParams.set('departure_at', params.departureDate.substring(0, 7)); // YYYY-MM
+    }
 
-        // Get the cheapest proposal
-        const cheapestProposal = ticket.proposals.reduce((min: any, p: any) =>
-            (!min || p.price.value < min.price.value) ? p : min, null);
+    try {
+        const url = `${TRAVELPAYOUTS_API_BASE}/prices_for_dates?${queryParams}`;
+        console.log('Fetching from Travelpayouts cached API...');
 
-        if (!cheapestProposal) continue;
+        const response = await fetch(url);
+        const data = await response.json();
 
-        // Get flight info from first and last legs
-        const firstLegIndex = ticket.segments[0]?.flights[0];
-        const lastSegment = ticket.segments[ticket.segments.length - 1];
-        const lastLegIndex = lastSegment?.flights[lastSegment.flights.length - 1];
-
-        const firstLeg = flightLegs[firstLegIndex];
-        const lastLeg = flightLegs[lastLegIndex];
-
-        if (!firstLeg) continue;
-
-        const airline = airlines.get(cheapestProposal.airline_id?.split('-')[0] || firstLeg.operating_carrier_designator?.split(' ')[0]);
-
-        // Calculate total transfers
-        let totalTransfers = 0;
-        for (const segment of ticket.segments) {
-            totalTransfers += segment.transfers?.length || 0;
+        if (!data.success || !data.data) {
+            console.error('Travelpayouts API Error:', data.error || 'No data');
+            return [];
         }
 
-        // Parse proposals
-        const proposals: Proposal[] = ticket.proposals.map((p: any) => {
-            const agent = agents.get(p.agent_id);
+        // Filter round-trip only
+        const roundTrips = data.data.filter((t: any) => t.return_at);
+
+        return roundTrips.map((ticket: any) => {
+            const actualOrigin = ticket.origin_airport || ticket.origin;
+            const actualDest = ticket.destination_airport || ticket.destination;
+
+            const depDate = new Date(ticket.departure_at);
+            const retDate = new Date(ticket.return_at);
+            const tripDuration = Math.round((retDate.getTime() - depDate.getTime()) / (1000 * 60 * 60 * 24));
+
             return {
-                id: p.id,
-                agentId: p.agent_id,
-                agentName: (agent as any)?.label || 'Unknown',
-                price: p.price.value,
-                currency: p.price.currency_code || 'EUR',
+                origin: actualOrigin,
+                destination: actualDest,
+                departureDate: ticket.departure_at?.split('T')[0] || '',
+                returnDate: ticket.return_at?.split('T')[0] || '',
+                price: ticket.price,
+                currency: 'eur',
+                airline: ticket.airline,
+                flightNumber: ticket.flight_number || '',
+                transfers: ticket.transfers || 0,
+                tripDuration,
+                link: generateSkyscannerLink(actualOrigin, actualDest, ticket.departure_at, ticket.return_at, ticket.airline),
             };
         });
-
-        tickets.push({
-            id: ticket.id || ticket.signature,
-            origin: firstLeg.origin,
-            destination: ticket.segments[0]?.flights.length > 0
-                ? flightLegs[ticket.segments[0].flights[ticket.segments[0].flights.length - 1]]?.destination
-                : firstLeg.destination,
-            departureDate: firstLeg.local_departure_date_time?.split('T')[0] || '',
-            returnDate: lastLeg?.local_departure_date_time?.split('T')[0] || '',
-            price: cheapestProposal.price.value,
-            currency: cheapestProposal.price.currency_code || 'EUR',
-            airline: (airline as any)?.iata || '',
-            airlineName: (airline as any)?.name || '',
-            transfers: totalTransfers,
-            flightLegs: [], // Simplified for now
-            proposals,
-        });
-    }
-
-    // Sort by price
-    tickets.sort((a, b) => a.price - b.price);
-
-    return tickets;
-}
-
-/**
- * Get booking link when user clicks "Buy"
- * This must only be called on user action, not pre-generated
- */
-export async function getBookingLink(
-    resultsUrl: string,
-    searchId: string,
-    proposalId: string
-): Promise<string | null> {
-    const marker = process.env.TRAVELPAYOUTS_MARKER;
-
-    if (!marker) {
-        return null;
-    }
-
-    try {
-        const response = await fetch(
-            `${resultsUrl}/searches/${searchId}/clicks/${proposalId}`,
-            {
-                method: 'GET',
-                headers: {
-                    'x-marker': marker,
-                },
-            }
-        );
-
-        if (!response.ok) {
-            console.error('Booking link failed:', response.status);
-            return null;
-        }
-
-        const data = await response.json();
-        return data.url || null;
     } catch (error) {
-        console.error('Booking link error:', error);
-        return null;
-    }
-}
-
-/**
- * Complete flight search - starts search and polls until complete
- * NOTE: This takes 30-60 seconds!
- */
-export async function searchFlights(params: FlightSearchParams, userIp: string = '78.182.150.226'): Promise<FlightTicket[]> {
-    console.log(`Starting real-time search: ${params.origin} -> ${params.destination}`);
-
-    // Start the search
-    const searchStart = await startSearch(params, userIp);
-    if (!searchStart) {
-        console.error('Failed to start search');
+        console.error('Travelpayouts fetch error:', error);
         return [];
     }
+}
 
-    console.log(`Search started. ID: ${searchStart.searchId}`);
+/**
+ * Search multiple routes and return cheapest deals
+ */
+export async function findCheapDeals(): Promise<TravelpayoutsFlight[]> {
+    const origins = ['IST', 'SAW'];
+    const destinations = ['ZRH', 'BER', 'CDG', 'AMS', 'BCN', 'VIE', 'MUC', 'PRG', 'BUD', 'ARN'];
 
-    // Poll for results
-    let allTickets: FlightTicket[] = [];
-    let lastTimestamp = 0;
-    let attempts = 0;
-    const maxAttempts = 30; // Max 30 seconds of polling
+    const allFlights: TravelpayoutsFlight[] = [];
 
-    while (attempts < maxAttempts) {
-        attempts++;
+    // Get departure month (next month)
+    const nextMonth = new Date();
+    nextMonth.setMonth(nextMonth.getMonth() + 1);
+    const departureMonth = nextMonth.toISOString().substring(0, 7);
 
-        const results = await getSearchResults(searchStart.searchId, searchStart.resultsUrl, lastTimestamp);
+    for (const origin of origins) {
+        for (const dest of destinations) {
+            try {
+                const flights = await searchFlights({
+                    origin,
+                    destination: dest,
+                    departureDate: departureMonth,
+                });
 
-        if (!results) {
-            console.error('Failed to get results');
-            break;
+                allFlights.push(...flights.slice(0, 2));
+
+                // Rate limit
+                await new Promise(r => setTimeout(r, 200));
+            } catch (e) {
+                console.log(`Error for ${origin}->${dest}:`, e);
+            }
         }
-
-        allTickets = [...allTickets, ...results.tickets];
-        lastTimestamp = results.lastTimestamp;
-
-        if (results.isOver) {
-            console.log(`Search complete. Found ${allTickets.length} tickets.`);
-            break;
-        }
-
-        // Wait 1 second before next poll
-        await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    // Remove duplicates and sort by price
-    const uniqueTickets = removeDuplicateTickets(allTickets);
-    uniqueTickets.sort((a, b) => a.price - b.price);
-
-    return uniqueTickets;
-}
-
-function removeDuplicateTickets(tickets: FlightTicket[]): FlightTicket[] {
+    // Sort by price and deduplicate
     const seen = new Set<string>();
-    return tickets.filter(ticket => {
-        const key = `${ticket.origin}-${ticket.destination}-${ticket.departureDate}-${ticket.price}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+    return allFlights
+        .sort((a, b) => a.price - b.price)
+        .filter(f => {
+            const key = `${f.origin}-${f.destination}-${f.departureDate}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
 }
 
-// Export for backward compatibility with old code
-export { generateSignature };
+/**
+ * Generate Skyscanner link with correct airport codes
+ */
+function generateSkyscannerLink(
+    origin: string,
+    destination: string,
+    departureDate?: string,
+    returnDate?: string,
+    airline?: string
+): string {
+    const formatDate = (dateStr?: string) => {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
+        const year = String(date.getFullYear()).slice(2);
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}${month}${day}`;
+    };
+
+    const depDate = formatDate(departureDate);
+    const retDate = formatDate(returnDate);
+    const originCode = origin.toLowerCase();
+    const destCode = destination.toLowerCase();
+
+    const baseUrl = `https://www.skyscanner.net/transport/flights/${originCode}/${destCode}/${depDate}/${retDate}/`;
+
+    const params = new URLSearchParams({
+        adultsv2: '1',
+        cabinclass: 'economy',
+        children: '0',
+        infants: '0',
+        rtn: '1',
+        currency: 'eur',
+    });
+
+    if (airline) {
+        params.set('airlines', airline);
+    }
+
+    return `${baseUrl}?${params.toString()}`;
+}
+
+export { generateSkyscannerLink, FlightSearchParams as SearchParams };
