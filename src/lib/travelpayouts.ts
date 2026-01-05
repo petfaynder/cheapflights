@@ -94,7 +94,7 @@ function generateSignature(params: Record<string, any>): string {
  * Start a flight search
  * Returns searchId and resultsUrl for polling
  */
-export async function startSearch(params: FlightSearchParams): Promise<{ searchId: string; resultsUrl: string } | null> {
+export async function startSearch(params: FlightSearchParams, userIp: string = '78.182.150.226'): Promise<{ searchId: string; resultsUrl: string } | null> {
     const token = process.env.TRAVELPAYOUTS_TOKEN;
     const marker = process.env.TRAVELPAYOUTS_MARKER;
 
@@ -148,7 +148,7 @@ export async function startSearch(params: FlightSearchParams): Promise<{ searchI
                 'x-affiliate-user-id': token,
                 'x-signature': signature,
                 'x-real-host': process.env.NEXT_PUBLIC_SITE_URL || 'cheapflights.app',
-                'x-user-ip': '0.0.0.0', // Will be replaced with actual user IP
+                'x-user-ip': userIp,
             },
             body: JSON.stringify({ ...requestBody, signature }),
         });
@@ -350,11 +350,11 @@ export async function getBookingLink(
  * Complete flight search - starts search and polls until complete
  * NOTE: This takes 30-60 seconds!
  */
-export async function searchFlights(params: FlightSearchParams): Promise<FlightTicket[]> {
+export async function searchFlights(params: FlightSearchParams, userIp: string = '78.182.150.226'): Promise<FlightTicket[]> {
     console.log(`Starting real-time search: ${params.origin} -> ${params.destination}`);
 
     // Start the search
-    const searchStart = await startSearch(params);
+    const searchStart = await startSearch(params, userIp);
     if (!searchStart) {
         console.error('Failed to start search');
         return [];
